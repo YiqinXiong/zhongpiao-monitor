@@ -1,6 +1,7 @@
 # 中票优品「京东E卡」补货监控方案
 
 针对 https://zpmall.zhongpiaofuli.com 的京东E卡补货监控与提醒，含可运行原型。
+代码仓库（private）：https://github.com/YiqinXiong/zhongpiao-monitor
 
 ## 文档
 

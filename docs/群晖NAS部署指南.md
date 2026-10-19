@@ -32,8 +32,10 @@
 
 **方式 A：从 GitHub 下载（推荐，与仓库同步更新）**
 
-1. 浏览器打开项目仓库页面 → 绿框 **Code** → **Download ZIP**；
-2. 解压，得到 `zpmon` 文件夹（里面应有 `Dockerfile`、`docker-compose.yml`、`config.example.json` 等）。
+1. 浏览器打开 https://github.com/YiqinXiong/zhongpiao-monitor （私有仓库，需登录你的 GitHub账号）；
+2. 绿框 **Code** → **Download ZIP**；
+3. 解压，得到 `zhongpiao-monitor-main` 文件夹，里面的 `zpmon` 子目录即项目
+   （应有 `Dockerfile`、`docker-compose.yml`、`config.example.json` 等）。
 
 **方式 B：本地上传**
 
