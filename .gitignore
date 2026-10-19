@@ -1,0 +1,14 @@
+# 含账号 token 的本地配置，切勿提交
+config.json
+token.json
+data/
+
+# 运行时产物
+*.log
+monitor_state.json
+__pycache__/
+*.pyc
+.venv/
+
+# 系统文件
+.DS_Store

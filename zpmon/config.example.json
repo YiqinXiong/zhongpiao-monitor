@@ -1,0 +1,103 @@
+{
+  "cityCode": 440300,
+  "pollIntervalSec": 10,
+  "jitter": 0.2,
+  "realertMinutes": 0,
+  "calibrateIntervalHours": 24,
+  "apiToken": "",
+  "targets": [
+    {
+      "mode": "sku",
+      "name": "【京东E卡】100面值",
+      "searchKey": "京东E卡",
+      "skuId": "12325240480893951",
+      "calibrate": true,
+      "_comment": "售价132。calibrate=true：每天按 searchKey 搜索校准 skuId（商品重新上架可能换新ID）"
+    },
+    {
+      "mode": "sku",
+      "name": "【盒马鲜生】100面值",
+      "searchKey": "盒马鲜生",
+      "skuId": "12325252256074751",
+      "calibrate": true,
+      "_comment": "售价132"
+    },
+    {
+      "mode": "sku",
+      "name": "【中石化】面值100元加油电子兑换券",
+      "searchKey": "中石化",
+      "skuId": "14598",
+      "calibrate": true,
+      "_comment": "售价129"
+    },
+    {
+      "mode": "sku",
+      "name": "【三网通】100元话费充值",
+      "searchKey": "三网通",
+      "skuId": "14794",
+      "calibrate": true,
+      "_comment": "售价129"
+    },
+    {
+      "mode": "search",
+      "searchKey": "面值",
+      "nameFilter": "100",
+      "_comment": "辅助：发现新增的同类型商品，只提醒不自动买；嫌打扰可删除此项目"
+    }
+  ],
+  "notify": {
+    "bark": {
+      "url": "https://api.day.app",
+      "key": ""
+    },
+    "pushplus": { "token": "" },
+    "serverchan": { "sendkey": "" },
+    "dingtalk": { "webhook": "" },
+    "wecom": { "webhook": "" },
+    "feishu": { "webhook": "" },
+    "telegram": { "botToken": "", "chatId": "" },
+    "webhook": { "url": "" }
+  },
+  "autoOrder": {
+    "enabled": false,
+    "dryRun": true,
+    "matchName": "",
+    "notifyDryRun": true,
+    "targets": [
+      {
+        "name": "【京东E卡】100面值",
+        "skuId": "12325240480893951",
+        "rechargePhone": "京东账号手机号",
+        "quantity": 1,
+        "maxWxPayAmount": 0,
+        "_comment": "京东E卡：填京东账号充值手机号。name 是稳定匹配键（skuId 会随上架变化）"
+      },
+      {
+        "name": "【盒马鲜生】100面值",
+        "skuId": "12325252256074751",
+        "rechargePhone": "盒马账号手机号",
+        "quantity": 1,
+        "maxWxPayAmount": 0,
+        "_comment": "盒马鲜生：填盒马账号"
+      },
+      {
+        "name": "【中石化】面值100元加油电子兑换券",
+        "skuId": "14598",
+        "rechargePhone": "中石化充值手机号",
+        "quantity": 1,
+        "maxWxPayAmount": 0,
+        "_comment": "中石化：按平台要求填写充值信息"
+      },
+      {
+        "name": "【三网通】100元话费充值",
+        "skuId": "14794",
+        "rechargePhone": "话费充值手机号",
+        "quantity": 1,
+        "maxWxPayAmount": 0,
+        "_comment": "三网通话费：填充值手机号"
+      }
+    ],
+    "cardNos": [],
+    "_comment": "enabled=false 或 dryRun=true 均不会真实扣款；每品种每天限量1张，买成功当天自动停止该品种，次日恢复；按 name（稳定）或 skuId 匹配购买目标，监控端校准出新ID后自动下单不受影响"
+  }
+}

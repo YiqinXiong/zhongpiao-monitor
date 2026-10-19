@@ -1,0 +1,21 @@
+# 中票优品补货监控 - Docker Compose 配置
+# 群晖 Container Manager「项目」可直接识别本文件
+services:
+  zpmon:
+    build: .
+    image: zpmon:latest
+    container_name: zpmon
+    restart: unless-stopped          # 崩溃/开机自动恢复
+    environment:
+      - TZ=Asia/Shanghai             # 时区：影响日志时间与"每日限购"的日期判定，勿改
+      # ---- 以下开关可选，取消注释即生效；优先级高于 config.json ----
+      # - ZPMON_AUTO_ORDER=0         # 0=关闭自动下单 1=开启
+      # - ZPMON_DRY_RUN=1            # 1=演练模式（不扣款） 0=真实下单
+    volumes:
+      - ./data:/data                 # config.json / monitor_state.json / monitor.log 都在这里
+    mem_limit: 256m                  # 内存上限，小内存 NAS 友好
+    logging:                          # 日志轮转，防止写满磁盘
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

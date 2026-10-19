@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+monitor_state.json
+config.json
+token.json
+data/
+docs/
+.git/
+.github/
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore
