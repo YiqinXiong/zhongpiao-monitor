@@ -58,8 +58,8 @@ def show_cards(api: MallApi):
         print("   福利卡列表：")
         for c in cards:
             name = c.get("cardName") or c.get("templateName") or "未命名卡"
-            print(f"   - {name} | 卡号 {c.get('cardNo')} | 余额 {c.get('balanceNum')}"
-                  f" | 可抵扣 {c.get('deducteNum')}")
+            print(f"   - {name} | 卡号 {c.get('cardNo')} "
+                  f"| 余额 {c.get('balanceAmount')} 元 | 有效期至 {c.get('validEndTime')}")
     except ApiError as e:
         print(f"   （查询福利卡失败: {e}）")
 

@@ -78,16 +78,27 @@ class AutoOrder:
             print(f"[AutoOrder 通知] {title}\n{content}", flush=True)
 
     def _pick_cards(self) -> list[dict]:
+        """选择可用于支付的福利卡。
+
+        已实测确认的卡券支付语义（综合B券 / cardType=2）：
+        - zpCardIds 传 [{cardNo, deducteNum}]，deducteNum=1 表示"启用该卡"；
+        - 服务端按订单金额自动分配抵扣：卡余额 >= 订单额则全额抵扣（微信补付0），
+          不足则抵扣卡余额、剩余走微信补付；传多张卡时服务端自动统筹，与顺序无关；
+        - balanceAmount 才是余额（元），balanceNum 是卡的"单位数量"（B券恒为1）。
+        """
         cards = self.api.ptcard_list()
         picked = []
         for c in cards:
             if self.card_nos and c.get("cardNo") not in self.card_nos:
                 continue
-            deduct = c.get("deducteNum")
-            if deduct is None:
-                deduct = c.get("balanceNum") or 0
-            if deduct and deduct > 0:
-                picked.append({"cardNo": c.get("cardNo"), "deducteNum": deduct})
+            balance = c.get("balanceAmount") or 0
+            if not balance or balance <= 0:
+                continue
+            if str(c.get("cardType")) == "2":
+                deduct = 1                      # B券：1 = 启用该卡，按余额自动抵
+            else:
+                deduct = int(c.get("balanceNum") or 1)  # 次卡/点卡：用全部次数
+            picked.append({"cardNo": c.get("cardNo"), "deducteNum": deduct})
         return picked
 
     def attempt(self, sku_id: str, product_name: str = "") -> dict:
