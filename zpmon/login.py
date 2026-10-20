@@ -64,6 +64,15 @@ def show_cards(api: MallApi):
         print(f"   （查询福利卡失败: {e}）")
 
 
+def get_wx_state(api: MallApi) -> str:
+    """获取登录授信 state（短信发送/登录接口要求 wxState 非空，每次调用都会变）。"""
+    data = api.call("app_get_wxma_auth_info").get("data") or {}
+    ws = data.get("wxState")
+    if not ws:
+        raise ApiError("app_get_wxma_auth_info 未返回 wxState")
+    return ws
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="", help="config.json 路径")
@@ -82,11 +91,13 @@ def main():
     if not (phone.isdigit() and len(phone) == 11):
         sys.exit("手机号格式不正确（应为 11 位数字）")
 
-    # 1. 发送验证码（失败可重试）
+    # 1. 发送验证码（每次尝试都重新获取 wxState；失败可重试）
+    wx_state = ""
     while True:
         try:
+            wx_state = get_wx_state(api)
             api.call("app_get_phone_sms_code_send",
-                     memberMobile=phone, templateCode=SMS_TEMPLATE_CODE, wxState="")
+                     memberMobile=phone, templateCode=SMS_TEMPLATE_CODE, wxState=wx_state)
             print("📨 验证码已发送，请查收手机短信（60 秒内可重发一次）")
             break
         except ApiError as e:
@@ -94,14 +105,15 @@ def main():
             if _ask("重试发送？(y/n): ").lower() != "y":
                 sys.exit("已取消")
 
-    # 2. 输入验证码登录（验证码错误可重输，不用重新发送）
+    # 2. 输入验证码登录（用发送时同一个 wxState；验证码错误可重输，不用重新发送）
     for attempt in range(1, 6):
         code = _ask("请输入短信验证码: ")
         if not code:
             continue
         try:
             data = api.call("app_set_phone_sms_code_login",
-                            memberMobile=phone, smsCode=code, wxState="").get("data") or {}
+                            memberMobile=phone, smsCode=code,
+                            wxState=wx_state).get("data") or {}
         except ApiError as e:
             print(f"登录失败: {e}（还可重试 {5 - attempt} 次）")
             continue
