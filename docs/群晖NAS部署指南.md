@@ -110,6 +110,7 @@ sudo docker compose down          # 停止
 | **改配置** | File Station 编辑 `data/config.json` → Container Manager 里**重启** zpmon 容器 |
 | **改监控商品** | 同上，编辑 `data/config.json` 的 `targets`（查商品 ID：见下方命令） |
 | **开关自动下单** | 编辑 `config.json` 的 `autoOrder.enabled` / `dryRun`，重启容器；或临时用环境变量 |
+| **登录取 token**（自动下单用） | 终端执行 `python /app/login.py`，输手机号+短信验证码，自动写入配置（详见下文） |
 | **查商品 ID** | 容器 → 终端 → 新终端：`python /app/find_product.py 京东` |
 | **立即校准商品 ID** | `python /app/monitor.py --calibrate-now` |
 | **手动买中了** | `python /app/monitor.py --mark-purchased <skuId>` |
@@ -120,6 +121,29 @@ sudo docker compose down          # 停止
 
 **升级程序版本**：下载新版 `zpmon` 文件夹 → 覆盖 NAS 上旧文件（**保留 `data/` 不动**）→
 Container Manager → 项目 → zpmon → **操作 → 重新构建**。
+
+### 获取登录令牌（想开启自动下单才需要）
+
+> 监控和提醒**不需要登录**；只有自动下单要用 `apiToken`。令牌只在 NAS 本地保管，勿外传。
+
+**方式 A：在 NAS 容器里直接登录（推荐，无需电脑）**
+
+容器 → **终端** → 新终端，执行：
+
+```bash
+python /app/login.py
+```
+
+按提示操作：输入手机号 → 手机收到验证码 → 把验证码输进去 → 显示福利卡余额即成功，
+token 已自动写进 `data/config.json`，重启容器后生效。
+
+**方式 B：在自己电脑上登录，再贴到 NAS**
+
+1. 电脑上按《快速上手指南》5.1 的 `login_helper.py` 或 Edge F12 方法拿到 token；
+2. File Station 编辑 `/docker/zpmon/data/config.json`，把 token 粘到 `"apiToken"` 字段；
+3. Container Manager 重启 zpmon 容器。
+
+> token 失效表现：下单类接口报未登录。重新跑一次 `login.py` 即可，监控不受影响。
 
 ## 7. NAS 专属注意事项
 
@@ -147,9 +171,13 @@ Container Manager → 项目 → zpmon → **操作 → 重新构建**。
 **Q5：想监控的商品搜不到？**
  商品可能正在下架。持续监控即可，重新上架会提醒；也可以用 `find_product.py` 换关键词或城市确认。
 
-**Q6：Docker 版和直接跑 Python 版有什么区别？**
+**Q6：login.py 提示发送失败/收不到验证码？**
+ 先确认手机号没错；60 秒内只能发一次，稍等再试；仍失败可能是平台对短信接口加了校验，
+ 改用方式 B（自己电脑浏览器登录后把 token 贴进 config.json）。
+
+**Q7：Docker 版和直接跑 Python 版有什么区别？**
  功能完全一致。Docker 版免去装 Python 环境、适合 NAS 7×24；直接跑适合临时测试。
 
 ---
 
-*文档版本：v1.0（2026-10-19） · 配套：`zpmon/Dockerfile`、`zpmon/docker-compose.yml`*
+*文档版本：v1.1（2026-10-20） · 配套：`zpmon/Dockerfile`、`zpmon/docker-compose.yml`、`zpmon/login.py`*

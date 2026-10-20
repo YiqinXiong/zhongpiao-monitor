@@ -27,7 +27,8 @@ python monitor.py            # 开始监控（Ctrl+C 停止）
 | `monitor.py` | 监控主程序（轮询/状态机/提醒/下单触发） |
 | `notify.py` | 提醒渠道：Bark / PushPlus / Server酱 / 钉钉 / 企微 / 飞书 / Telegram / 自定义 webhook |
 | `auto_order.py` | 自动下单（**默认 dryRun 不扣款**，成功后自动推送通知） |
-| `login_helper.py` | Playwright 登录助手（自动捕获 apiToken） |
+| `login_helper.py` | Playwright 登录助手（自动捕获 apiToken，需显示器） |
+| `login.py` | 终端交互登录：手机号+短信验证码，自动写入 config.json（NAS/SSH 适用） |
 | `find_product.py` | 商品查询工具：搜商品、查 ID/库存/售价、生成可粘贴配置 |
 | `config.example.json` | 配置模板（默认深圳 + 京东E卡北京监控目标） |
 | `monitor.log` / `monitor_state.json` | 运行后自动生成 |
@@ -86,9 +87,13 @@ python monitor.py --reset-purchased        # 清除全部已购标记（测试�
 ## 获取 apiToken（仅自动下单需要）
 
 ```bash
+# 方式一：终端交互登录（NAS/SSH/无显示器环境，推荐）
+python login.py                       # 本机
+docker exec -it zpmon python /app/login.py   # 容器内
+
+# 方式二：Playwright 登录助手（需要有显示器的电脑）
 pip install playwright && playwright install chromium
 python login_helper.py --phone 你的手机号
-# 在弹出浏览器里完成短信登录，token 自动保存到 token.json
 ```
 
 或在 Edge 已登录商城时，F12 控制台执行 `localStorage.getItem('apiToken')`，填入 `config.json`。
