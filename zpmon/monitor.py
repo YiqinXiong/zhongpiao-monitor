@@ -128,31 +128,92 @@ def _is_rate_limited(err) -> bool:
     return "访问频繁" in s or "频繁" in s or "too many" in s.lower() or "限流" in s
 
 
-def _adaptive_interval(config: dict, state: dict, now: float, n_targets: int):
-    """按每日预算自适应间隔。返回每个目标的最小心跳间隔(秒)；None = 今日预算耗尽。"""
-    budget = int(config.get("dailyRequestBudget", 3000))
-    base = float(config.get("minIntervalSec", 120))
-    if budget <= 0 or n_targets <= 0:
-        return base
+# ---------- 分时段调度 ----------
+
+def _parse_hhmm(text: str, fallback: tuple = (0, 0)) -> tuple:
+    try:
+        h, m = str(text).split(":")
+        return int(h), int(m)
+    except Exception:
+        return fallback
+
+
+def _in_window(dt: datetime, frm: str, to: str) -> bool:
+    """判断时刻是否落在时间窗内（支持跨零点窗口，如 22:00-06:00）。"""
+    fh, fm = _parse_hhmm(frm)
+    th, tm = _parse_hhmm(to)
+    cur = dt.hour * 60 + dt.minute
+    start, end = fh * 60 + fm, th * 60 + tm
+    if start == end:
+        return False
+    if start < end:
+        return start <= cur < end
+    return cur >= start or cur < end      # 跨零点
+
+
+def _schedule_interval(config: dict, dt: datetime) -> float:
+    """该时刻 schedule 规定的基础间隔（秒）。"""
+    sch = config.get("schedule") or {}
+    for w in sch.get("windows") or []:
+        if _in_window(dt, w.get("from", "00:00"), w.get("to", "00:00")):
+            return float(w.get("minIntervalSec", 60))
+    return float(sch.get("defaultMinIntervalSec", config.get("minIntervalSec", 120)))
+
+
+def _base_interval(config: dict, target: dict, now: float) -> float:
+    """目标的基础间隔：显式 minIntervalSec 优先，否则跟随当前时段的 schedule。"""
+    own = target.get("minIntervalSec")
+    if own:
+        return float(own)
+    return _schedule_interval(config, datetime.fromtimestamp(now))
+
+
+def _plan_requests(config: dict, now: float) -> float:
+    """按当前 schedule 估算「今天剩余时间」还会产生多少请求（用于预算校验）。"""
+    dt = datetime.fromtimestamp(now)
+    end = (dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    total = 0.0
+    for t in config.get("targets", []):
+        own = t.get("minIntervalSec")
+        if own:
+            total += max(0.0, end.timestamp() - now) / float(own)
+            continue
+        # 跟随 schedule：按 5 分钟粒度积分
+        t_cur = dt
+        step = 300
+        while t_cur < end:
+            iv = _schedule_interval(config, t_cur)
+            total += step / iv
+            t_cur += timedelta(seconds=step)
+    return total
+
+
+def _scale(config: dict, state: dict, now: float):
+    """预算缩放系数：>=1。按 schedule 的预计用量若超过剩余预算，则整体等比放慢。
+    返回 None 表示今日预算已耗尽。"""
+    budget = int(config.get("dailyRequestBudget", 4000))
+    if budget <= 0:
+        return 1.0
     left = budget - _day_count(state)
     if left <= 0:
         return None
-    secs_left = max(300.0, _next_midnight() - now)
-    per_request = secs_left / left          # 两次请求之间的最小间隔
-    return max(base, per_request * n_targets)
+    planned = _plan_requests(config, now)
+    if planned <= left:
+        return 1.0
+    return planned / left
 
 
 def _target_key(target: dict) -> str:
     return f"{target['mode']}:{target.get('productId') or target.get('skuId') or target.get('searchKey')}"
 
 
-def _pick_due(config: dict, state: dict, now: float, adaptive: float):
+def _pick_due(config: dict, state: dict, now: float, scale: float):
     """挑出最该检查的目标（最过期的优先）。返回 (target, key) 或 None。"""
     last_check = state.setdefault("lastCheck", {})
     best = None
     for t in config["targets"]:
         key = _target_key(t)
-        mi = max(float(t.get("minIntervalSec", adaptive)), adaptive)
+        mi = _base_interval(config, t, now) * scale
         overdue = now - float(last_check.get(key, 0)) - mi
         if overdue >= 0 and (best is None or overdue > best[0]):
             best = (overdue, t, key)
@@ -342,6 +403,35 @@ def _env_bool(name: str):
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def _log_plan(config: dict, state: dict, notifier=None):
+    """启动/规划时输出 schedule 计划用量，并与每日预算对照。"""
+    sch = config.get("schedule") or {}
+    planned = _plan_requests(config, time.time())
+    budget = int(config.get("dailyRequestBudget", 4000))
+    used = _day_count(state)
+    left = max(0, budget - used)
+    txt = (f"[计划] 按当前 schedule 预计今日剩余还需约 {planned:.0f} 次请求，"
+           f"预算剩余 {left} 次")
+    if sch.get("windows"):
+        for w in sch["windows"]:
+            txt += f"；{w.get('from')}-{w.get('to')} → {w.get('minIntervalSec')}s/目标"
+    if sch.get("defaultMinIntervalSec"):
+        txt += f"；其余时段 → {sch.get('defaultMinIntervalSec')}s/目标"
+    _log(txt)
+    if budget > 0 and planned > left:
+        msg = (f"按当前 schedule 预计今日还需约 {planned:.0f} 次请求，"
+               f"超过剩余预算 {left} 次。\n"
+               f"程序会把所有间隔等比放慢约 {planned / max(1, left):.1f} 倍以保住配额。\n"
+               f"建议：把 dailyRequestBudget 提到 {int(planned * 1.15)}，"
+               f"或调大 schedule 的间隔（减少监控目标）。")
+        _log(f"[计划] ⚠️ {msg}")
+        if notifier and not state.get("planWarned"):
+            state["planWarned"] = _today()
+            save_state(state)
+            notifier.send("监控计划用量超过每日预算", msg)
+    return planned
+
+
 def run(config: dict):
     global _stop
     city = int(config.get("cityCode", 110100))
@@ -390,7 +480,8 @@ def run(config: dict):
             _log("警告: autoOrder 未配置 targets/matchName，将只提醒不会自动购买")
 
     _log(f"监控启动 cityCode={city} 目标={len(config['targets'])} "
-         f"基础间隔={base_interval}s 每日预算={budget} autoOrder={'on' if auto_enabled else 'off'}")
+         f"每日预算={budget} autoOrder={'on' if auto_enabled else 'off'}")
+    _log_plan(config, state, notifier)
 
     seen_requests = api.total_requests
     # 启动校准的请求也计入当日预算
@@ -415,9 +506,9 @@ def run(config: dict):
             _stop_wait(min(cooldown - now, 60))
             continue
 
-        # 2) 每日预算自适应
-        adaptive = _adaptive_interval(config, state, now, len(config["targets"]))
-        if adaptive is None:
+        # 2) 每日预算自适应（按 schedule 的计划用量等比缩放间隔）
+        scale = _scale(config, state, now)
+        if scale is None:
             until = _next_midnight()
             state["cooldownUntil"] = until
             state["cooldownReason"] = "daily_budget"
@@ -431,12 +522,13 @@ def run(config: dict):
             continue
 
         # 3) 选一个到期的目标（每轮最多 1 个请求）
-        if abs(adaptive - state.get("lastAdaptive", 0)) > 30:
-            state["lastAdaptive"] = adaptive
+        cur_iv = _schedule_interval(config, datetime.fromtimestamp(now)) * scale
+        if abs(cur_iv - state.get("lastAdaptive", 0)) > 15:
+            state["lastAdaptive"] = cur_iv
             save_state(state)
-            _log(f"[调度] 生效检查间隔 ≈ {adaptive:.0f}s/目标"
+            _log(f"[调度] 当前时段检查间隔 ≈ {cur_iv:.0f}s/目标"
                  f"（今日已用 {_day_count(state)}/{budget} 次请求）")
-        picked = _pick_due(config, state, now, adaptive)
+        picked = _pick_due(config, state, now, scale)
         if not picked:
             _stop_wait(5)
             continue
@@ -513,7 +605,7 @@ def run(config: dict):
                 save_state(state)
                 _log(f"[限流] {e} → 退避至 "
                      f"{datetime.fromtimestamp(until):%m-%d %H:%M}"
-                     f"（间隔将放慢至 {adaptive * state['throttleFactor']:.0f}s）")
+                     f"（间隔将放慢至 {cur_iv * state['throttleFactor']:.0f}s）")
                 if not notified_limit:
                     notified_limit = True
                     notifier.send(
@@ -572,6 +664,8 @@ def main():
                         help="立即执行一次商品 ID 校准并退出")
     parser.add_argument("--stats", action="store_true",
                         help="显示今日请求用量与限流状态后退出")
+    parser.add_argument("--plan", action="store_true",
+                        help="按当前 schedule 估算今日请求用量并对照预算后退出")
     args = parser.parse_args()
 
     # 一次性维护命令（不需要启动监控）
@@ -605,6 +699,27 @@ def main():
     config = json.loads(cfg_path.read_text(encoding="utf-8"))
     if not config.get("targets"):
         sys.exit("config.json 中 targets 为空")
+
+    if args.plan:
+        state = load_state()
+        sch = config.get("schedule") or {}
+        now = time.time()
+        dt = datetime.fromtimestamp(now)
+        planned = _plan_requests(config, now)
+        budget = int(config.get("dailyRequestBudget", 4000))
+        used = _day_count(state)
+        print(f"当前时段: {dt:%H:%M}  生效间隔 ≈ "
+              f"{_schedule_interval(config, dt):.0f}s/目标")
+        for w in sch.get("windows") or []:
+            print(f"  时段 {w.get('from')}-{w.get('to')} → {w.get('minIntervalSec')}s/目标")
+        print(f"  其余时段 → {sch.get('defaultMinIntervalSec', config.get('minIntervalSec', 120))}s/目标")
+        print(f"今日已请求: {used} / 预算 {budget}（剩余 {max(0, budget - used)}）")
+        print(f"按 schedule 预计今日剩余还需: {planned:.0f} 次请求")
+        if budget > 0 and planned > max(0, budget - used):
+            print(f"⚠️ 超出预算：间隔将被等比放慢约 {planned / max(1, budget - used):.2f} 倍")
+            print(f"   建议把 dailyRequestBudget 提到 {int(planned * 1.15)}，"
+                  f"或调大 schedule 间隔")
+        return
 
     if args.calibrate_now:
         api = MallApi(api_token=config.get("apiToken", ""),

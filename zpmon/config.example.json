@@ -1,7 +1,13 @@
 {
   "cityCode": 440300,
-  "minIntervalSec": 120,
-  "dailyRequestBudget": 3000,
+  "schedule": {
+    "windows": [
+      { "from": "09:00", "to": "17:00", "minIntervalSec": 60 }
+    ],
+    "defaultMinIntervalSec": 180,
+    "_comment": "分时段调度：09:00-17:00 每 60 秒检查一个目标，其余时段每 180 秒。容器时区为 Asia/Shanghai"
+  },
+  "dailyRequestBudget": 4000,
   "rateLimitBackoffMinutes": 30,
   "jitter": 0.2,
   "realertMinutes": 0,
@@ -14,8 +20,7 @@
       "searchKey": "京东E卡",
       "skuId": "12325240480893951",
       "calibrate": true,
-      "minIntervalSec": 120,
-      "_comment": "售价132。calibrate=true：每天按 searchKey 搜索校准 skuId。minIntervalSec=该目标最小检查间隔(秒)"
+      "_comment": "售价132。跟随 schedule 分时段调度；calibrate=true 每天按 searchKey 校准 skuId"
     },
     {
       "mode": "sku",
@@ -23,7 +28,6 @@
       "searchKey": "盒马鲜生",
       "skuId": "12325252256074751",
       "calibrate": true,
-      "minIntervalSec": 120,
       "_comment": "售价132"
     },
     {
@@ -32,7 +36,6 @@
       "searchKey": "中石化",
       "skuId": "14598",
       "calibrate": true,
-      "minIntervalSec": 120,
       "_comment": "售价129"
     },
     {
@@ -41,7 +44,6 @@
       "searchKey": "三网通",
       "skuId": "14794",
       "calibrate": true,
-      "minIntervalSec": 120,
       "_comment": "售价129"
     },
     {
@@ -49,7 +51,7 @@
       "searchKey": "面值",
       "nameFilter": "100",
       "minIntervalSec": 600,
-      "_comment": "辅助：发现新增的同类型商品，只提醒不自动买；查询较重，间隔放宽到10分钟；嫌打扰可删除此项目"
+      "_comment": "辅助：发现新增同类型商品，只提醒不自动买；此处显式 minIntervalSec 覆盖 schedule（查询较重，10分钟一次）"
     }
   ],
   "notify": {
