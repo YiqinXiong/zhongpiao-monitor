@@ -1,6 +1,8 @@
 {
   "cityCode": 440300,
-  "pollIntervalSec": 10,
+  "minIntervalSec": 120,
+  "dailyRequestBudget": 3000,
+  "rateLimitBackoffMinutes": 30,
   "jitter": 0.2,
   "realertMinutes": 0,
   "calibrateIntervalHours": 24,
@@ -12,7 +14,8 @@
       "searchKey": "京东E卡",
       "skuId": "12325240480893951",
       "calibrate": true,
-      "_comment": "售价132。calibrate=true：每天按 searchKey 搜索校准 skuId（商品重新上架可能换新ID）"
+      "minIntervalSec": 120,
+      "_comment": "售价132。calibrate=true：每天按 searchKey 搜索校准 skuId。minIntervalSec=该目标最小检查间隔(秒)"
     },
     {
       "mode": "sku",
@@ -20,6 +23,7 @@
       "searchKey": "盒马鲜生",
       "skuId": "12325252256074751",
       "calibrate": true,
+      "minIntervalSec": 120,
       "_comment": "售价132"
     },
     {
@@ -28,6 +32,7 @@
       "searchKey": "中石化",
       "skuId": "14598",
       "calibrate": true,
+      "minIntervalSec": 120,
       "_comment": "售价129"
     },
     {
@@ -36,13 +41,15 @@
       "searchKey": "三网通",
       "skuId": "14794",
       "calibrate": true,
+      "minIntervalSec": 120,
       "_comment": "售价129"
     },
     {
       "mode": "search",
       "searchKey": "面值",
       "nameFilter": "100",
-      "_comment": "辅助：发现新增的同类型商品，只提醒不自动买；嫌打扰可删除此项目"
+      "minIntervalSec": 600,
+      "_comment": "辅助：发现新增的同类型商品，只提醒不自动买；查询较重，间隔放宽到10分钟；嫌打扰可删除此项目"
     }
   ],
   "notify": {
@@ -98,6 +105,6 @@
       }
     ],
     "cardNos": [],
-    "_comment": "enabled=false 或 dryRun=true 均不会真实扣款；每品种每天限量1张，买成功当天自动停止该品种，次日恢复；按 name（稳定）或 skuId 匹配购买目标，监控端校准出新ID后自动下单不受影响"
+    "_comment": "enabled=false 或 dryRun=true 均不会真实扣款；每品种每天限量1张，买成功当天自动停止该品种，次日恢复；按 name（稳定）或 skuId 匹配购买目标"
   }
 }

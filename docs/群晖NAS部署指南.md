@@ -112,6 +112,7 @@ sudo docker compose down          # 停止
 | **开关自动下单** | 编辑 `config.json` 的 `autoOrder.enabled` / `dryRun`，重启容器；或临时用环境变量 |
 | **登录取 token**（自动下单用） | 终端执行 `python /app/login.py`，输手机号+短信验证码，自动写入配置（详见下文） |
 | **查商品 ID** | 容器 → 终端 → 新终端：`python /app/find_product.py 京东` |
+| **看今日请求用量** | 终端执行 `python /app/monitor.py --stats`（含限流状态、已用次数） |
 | **立即校准商品 ID** | `python /app/monitor.py --calibrate-now` |
 | **手动买中了** | `python /app/monitor.py --mark-purchased <skuId>` |
 | **恢复当天监控** | `python /app/monitor.py --reset-purchased` |
@@ -175,7 +176,13 @@ token 已自动写进 `data/config.json`，重启容器后生效。
  先确认手机号没错；60 秒内只能发一次，稍等再试；仍失败可能是平台对短信接口加了校验，
  改用方式 B（自己电脑浏览器登录后把 token 贴进 config.json）。
 
-**Q7：Docker 版和直接跑 Python 版有什么区别？**
+**Q7：日志出现「IP[x.x.x.x]今日访问频繁」？**
+ 平台按出口 IP 限制每日请求次数。程序会自动：暂停 30 分钟 → 间隔自动放慢 → 给你推送通知；
+ 反复触发则暂停到次日 0 点。想立刻恢复可换出口 IP（手机热点），次日 0 点配额自动重置。
+ 长期建议调大 `config.json` 的 `minIntervalSec`（默认 120 秒）或减少监控目标。
+ 用 `python /app/monitor.py --stats` 可查看今日已用次数与限流状态。
+
+**Q8：Docker 版和直接跑 Python 版有什么区别？**
  功能完全一致。Docker 版免去装 Python 环境、适合 NAS 7×24；直接跑适合临时测试。
 
 ---

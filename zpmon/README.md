@@ -72,7 +72,23 @@ ZPMON_DRY_RUN=1 python monitor.py       # 强制演练
 ```bash
 python monitor.py --mark-purchased 14598   # 手动买中后：该 sku 当天安静（运行中即时生效）
 python monitor.py --reset-purchased        # 清除全部已购标记（测试用）
+python monitor.py --stats                  # 今日请求用量 / 限流状态 / 降速倍数
 ```
+
+## 限流保护（平台按出口 IP 有每日配额）
+
+超配额会返回 `IP[x.x.x.x]今日访问频繁`。程序三层保护：
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `minIntervalSec` | 120 | 每个目标的最小检查间隔（可被目标内同名键覆盖） |
+| `dailyRequestBudget` | 3000 | 每日请求预算；程序自动分配间隔，永不超预算（0 = 不限制） |
+| `rateLimitBackoffMinutes` | 30 | 触发限流后暂停分钟数（反复触发则暂停到次日 0 点） |
+
+- 串行调度：每轮最多 1 个请求，按各目标间隔轮转，不扎堆
+- 触发限流：自动退避 + 间隔自动放慢（×2，上限 ×16）+ 推送通知
+- 用量查询：`python monitor.py --stats`
+- 换出口 IP（手机热点）可立即解除；次日 0 点配额自动重置
 
 ## 商品 ID 自动校准
 

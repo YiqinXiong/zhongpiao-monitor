@@ -28,6 +28,7 @@ class MallApi:
     def __init__(self, api_token: str = "", city_code: int = 110100):
         self.api_token = api_token or ""
         self.city_code = city_code
+        self.total_requests = 0   # 累计请求数（用于限流预算统计）
         self.session = requests.Session()
         self.session.headers.update({
             "content-type": "application/json;charset=UTF-8",
@@ -65,6 +66,7 @@ class MallApi:
             "apiToken": self.api_token,
         }
         resp = self.session.post(API_URL, json=body, headers=headers, timeout=15)
+        self.total_requests += 1
         resp.raise_for_status()
         data = resp.json()
         if data.get("code") != 200:

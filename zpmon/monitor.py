@@ -14,18 +14,20 @@
 - detail 模式：轮询 app_get_h5product_detail，以 remindMessageTip 为空且
   skuList 中存在 usableStocks > 0 判定有货；商品下架时接口返回
   code=1000「该商品暂时无法购买」，视为无货并持续监控。
-- 每个 target 可单独配置 cityCode（可选，仅影响列表/详情查询上下文；
-  库存监控与城市无关）。
 - ID 自动校准：商品经常上架/下架，重新上架后可能换新 skuId/productId。
   对配置了 "calibrate": true 的目标，启动时、每 calibrateIntervalHours
   （默认24h）、以及接口报错时，自动用 searchKey 搜索并按商品名匹配更新 ID，
   校准结果存 monitor_state.json（重启不丢），ID 变化时推送通知。
-- 检测到缺货 -> 有货的跳变时触发全部提醒渠道；可选持续重复提醒。
-- autoOrder.enabled=true 时触发自动下单（默认 dryRun）；只购买
-  autoOrder.targets 或 matchName 指定的商品。
-- 每日限购：每个 sku 每天限量 1 张。下单成功（或订单创建待支付）后，
-  该 sku 当天自动停止监控与购买，次日自动恢复。手动买中后可用
-  --mark-purchased <skuId> 让监控当天安静。
+
+限流与配额（重要）：
+商城对同一出口 IP 有「每日访问次数」配额，超出会返回
+「IP[x.x.x.x]今日访问频繁」。本程序因此：
+- 串行调度：每轮最多发 1 个请求，按各目标的 minIntervalSec 均匀轮转，
+  绝不像早期版本那样 10 秒一轮并发查 5 个目标（那会产生 4 万+ 次/天）；
+- 每日预算：dailyRequestBudget（默认 3000）内自动分配间隔，
+  越接近预算间隔越长，永不超预算；
+- 触发限流：立即退避（默认 30 分钟）+ 降速（间隔 ×2，上限 ×16）+ 推送通知，
+  反复触发则暂停到次日 0 点。
 
 环境变量（便于不编辑文件切换，改后需重启进程）：
     ZPMON_AUTO_ORDER=1     开启自动下单（等同 enabled=true）
@@ -41,7 +43,7 @@ import re
 import signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from notify import Notifier
@@ -77,6 +79,8 @@ def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
+# ---------- 每日限购 ----------
+
 def _today() -> str:
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -94,89 +98,65 @@ def mark_purchased(state: dict, sku_id) -> None:
     _log(f"[限购] sku={sku_id} 今日已购买，当天停止监控/购买该品种（次日自动恢复）")
 
 
-def check_search_target(api: MallApi, target: dict) -> list[dict]:
-    """返回有货的商品列表（可能多个 SKU/面值）。"""
-    data = api.product_list(
-        search_key=target["searchKey"],
-        page_num=target.get("pageNum", 1),
-        brand_id=target.get("brandId", ""),
-        city_code=target.get("cityCode"),
-    )
-    pattern = target.get("nameFilter")
-    in_stock = []
-    for p in (data.get("data", {}).get("productList") or []):
-        name = p.get("productName", "")
-        if pattern and not re.search(pattern, name):
-            continue
-        stocks = p.get("usableStocks")
-        if stocks is not None and stocks > 0:
-            in_stock.append(p)
-    return in_stock
+# ---------- 限流与每日预算 ----------
+
+def _next_midnight() -> float:
+    dt = datetime.now()
+    tomorrow = (dt + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return tomorrow.timestamp()
 
 
-def check_detail_target(api: MallApi, target: dict) -> list[dict]:
-    try:
-        data = api.product_detail(target["productId"], city_code=target.get("cityCode"))
-    except ApiError as e:
-        # 商品下架时详情接口返回 code=1000「该商品暂时无法购买」：视为无货并持续监控，
-        # 重新上架后接口即恢复正常。其余错误（网络/限流等）继续抛出走告警日志。
-        if "1000" in str(e) or "暂时无法购买" in str(e):
-            _log(f"[detail:{target['productId']}] 商品暂时无法购买（下架中），继续监控")
-            return []
-        raise
-    product = (data.get("data") or {}).get("product") or {}
-    remind = (product.get("remindMessageTip") or "").strip()
-    in_stock = []
-    if not remind:
-        for sku in product.get("skuList") or []:
-            stocks = sku.get("usableStocks")
-            if stocks is None or stocks > 0:
-                in_stock.append({
-                    "productId": product.get("productId"),
-                    "productName": product.get("productName"),
-                    "skuId": sku.get("skuId"),
-                    "usableStocks": stocks,
-                    "salePrice": sku.get("salePrice"),
-                })
-    return in_stock
+def _day_count(state: dict) -> int:
+    stats = state.get("requestStats") or {}
+    if stats.get("date") != _today():
+        return 0
+    return int(stats.get("count", 0))
 
 
-def check_sku_target(api: MallApi, target: dict) -> list[dict]:
-    """sku 模式：直接轮询 app_get_h5product_sku_check。
-    不受商品上下架/城市上架影响，是最轻量的库存探针。"""
-    data = api.sku_check(target["skuId"])
-    sku = data.get("data") or {}
-    stocks = sku.get("usableStocks")
-    if stocks is not None and stocks > 0:
-        return [{
-            "productId": sku.get("productId"),
-            "productName": sku.get("skuName") or target.get("name", ""),
-            "skuId": sku.get("skuId"),
-            "usableStocks": stocks,
-            "salePrice": sku.get("salePrice"),
-        }]
-    return []
+def _bump_requests(state: dict, n: int):
+    if n <= 0:
+        return
+    stats = state.get("requestStats") or {}
+    if stats.get("date") != _today():
+        stats = {"date": _today(), "count": 0}
+    stats["count"] = int(stats.get("count", 0)) + n
+    state["requestStats"] = stats
 
 
-def fmt_items(items: list[dict]) -> str:
-    lines = []
-    for p in items:
-        price = p.get("skuMinSalePrice") or p.get("salePrice")
-        pid = p.get("productId")
-        link = f"{MALL_URL}/mall/cake/dg_detail?id={pid}" if pid else ""
-        lines.append(
-            f"- {p.get('productName')} | sku={p.get('skuId')} "
-            f"| 库存={p.get('usableStocks')} | 售价={price}"
-            + (f"\n  {link}" if link else "")
-        )
-    return "\n".join(lines)
+def _is_rate_limited(err) -> bool:
+    s = str(err)
+    return "访问频繁" in s or "频繁" in s or "too many" in s.lower() or "限流" in s
 
 
-def _env_bool(name: str):
-    v = os.environ.get(name)
-    if v is None or v == "":
+def _adaptive_interval(config: dict, state: dict, now: float, n_targets: int):
+    """按每日预算自适应间隔。返回每个目标的最小心跳间隔(秒)；None = 今日预算耗尽。"""
+    budget = int(config.get("dailyRequestBudget", 3000))
+    base = float(config.get("minIntervalSec", 120))
+    if budget <= 0 or n_targets <= 0:
+        return base
+    left = budget - _day_count(state)
+    if left <= 0:
         return None
-    return v.strip().lower() in ("1", "true", "yes", "on")
+    secs_left = max(300.0, _next_midnight() - now)
+    per_request = secs_left / left          # 两次请求之间的最小间隔
+    return max(base, per_request * n_targets)
+
+
+def _target_key(target: dict) -> str:
+    return f"{target['mode']}:{target.get('productId') or target.get('skuId') or target.get('searchKey')}"
+
+
+def _pick_due(config: dict, state: dict, now: float, adaptive: float):
+    """挑出最该检查的目标（最过期的优先）。返回 (target, key) 或 None。"""
+    last_check = state.setdefault("lastCheck", {})
+    best = None
+    for t in config["targets"]:
+        key = _target_key(t)
+        mi = max(float(t.get("minIntervalSec", adaptive)), adaptive)
+        overdue = now - float(last_check.get(key, 0)) - mi
+        if overdue >= 0 and (best is None or overdue > best[0]):
+            best = (overdue, t, key)
+    return (best[1], best[2]) if best else None
 
 
 # ---------- 商品 ID 自动校准 ----------
@@ -275,12 +255,100 @@ def apply_calibrated_ids(config: dict, state: dict) -> None:
                 target[field] = rec["id"]
 
 
+# ---------- 库存检查 ----------
+
+def check_search_target(api: MallApi, target: dict) -> list[dict]:
+    """返回有货的商品列表（可能多个 SKU/面值）。"""
+    data = api.product_list(
+        search_key=target["searchKey"],
+        page_num=target.get("pageNum", 1),
+        brand_id=target.get("brandId", ""),
+        city_code=target.get("cityCode"),
+    )
+    pattern = target.get("nameFilter")
+    in_stock = []
+    for p in (data.get("data", {}).get("productList") or []):
+        name = p.get("productName", "")
+        if pattern and not re.search(pattern, name):
+            continue
+        stocks = p.get("usableStocks")
+        if stocks is not None and stocks > 0:
+            in_stock.append(p)
+    return in_stock
+
+
+def check_detail_target(api: MallApi, target: dict) -> list[dict]:
+    try:
+        data = api.product_detail(target["productId"], city_code=target.get("cityCode"))
+    except ApiError as e:
+        # 商品下架时详情接口返回 code=1000「该商品暂时无法购买」：视为无货并持续监控，
+        # 重新上架后接口即恢复正常。其余错误（网络/限流等）继续抛出走告警日志。
+        if "1000" in str(e) or "暂时无法购买" in str(e):
+            _log(f"[detail:{target['productId']}] 商品暂时无法购买（下架中），继续监控")
+            return []
+        raise
+    product = (data.get("data") or {}).get("product") or {}
+    remind = (product.get("remindMessageTip") or "").strip()
+    in_stock = []
+    if not remind:
+        for sku in product.get("skuList") or []:
+            stocks = sku.get("usableStocks")
+            if stocks is None or stocks > 0:
+                in_stock.append({
+                    "productId": product.get("productId"),
+                    "productName": product.get("productName"),
+                    "skuId": sku.get("skuId"),
+                    "usableStocks": stocks,
+                    "salePrice": sku.get("salePrice"),
+                })
+    return in_stock
+
+
+def check_sku_target(api: MallApi, target: dict) -> list[dict]:
+    """sku 模式：直接轮询 app_get_h5product_sku_check。
+    不受商品上下架/城市影响，是最轻量的库存探针。"""
+    data = api.sku_check(target["skuId"])
+    sku = data.get("data") or {}
+    stocks = sku.get("usableStocks")
+    if stocks is not None and stocks > 0:
+        return [{
+            "productId": sku.get("productId"),
+            "productName": sku.get("skuName") or target.get("name", ""),
+            "skuId": sku.get("skuId"),
+            "usableStocks": stocks,
+            "salePrice": sku.get("salePrice"),
+        }]
+    return []
+
+
+def fmt_items(items: list[dict]) -> str:
+    lines = []
+    for p in items:
+        price = p.get("skuMinSalePrice") or p.get("salePrice")
+        pid = p.get("productId")
+        link = f"{MALL_URL}/mall/cake/dg_detail?id={pid}" if pid else ""
+        lines.append(
+            f"- {p.get('productName')} | sku={p.get('skuId')} "
+            f"| 库存={p.get('usableStocks')} | 售价={price}"
+            + (f"\n  {link}" if link else "")
+        )
+    return "\n".join(lines)
+
+
+def _env_bool(name: str):
+    v = os.environ.get(name)
+    if v is None or v == "":
+        return None
+    return v.strip().lower() in ("1", "true", "yes", "on")
+
+
 def run(config: dict):
     global _stop
-    interval = float(config.get("pollIntervalSec", 10))
-    jitter = float(config.get("jitter", 0.2))
     city = int(config.get("cityCode", 110100))
     repeat_min = float(config.get("realertMinutes", 0))  # 0 = 有货期间不重复提醒
+    budget = int(config.get("dailyRequestBudget", 3000))
+    base_interval = float(config.get("minIntervalSec", config.get("pollIntervalSec", 120)))
+    backoff_sec = float(config.get("rateLimitBackoffMinutes", 30)) * 60
 
     api = MallApi(api_token=config.get("apiToken", ""), city_code=city)
     notifier = Notifier(config.get("notify"))
@@ -289,6 +357,7 @@ def run(config: dict):
     state.setdefault("lastStatus", {})  # key -> bool
     state.setdefault("purchased", {})   # skuId -> "YYYY-MM-DD"（每日限购 1 张）
     state.setdefault("calibrated", {})  # 商品名 -> {"id":..., "at":...}（ID 自动校准）
+    state.setdefault("lastCheck", {})   # key -> 上次检查时间戳（限流调度用）
 
     # 启动时应用已校准的 ID，并立即校准一次（商品可能已换新 ID）
     apply_calibrated_ids(config, state)
@@ -309,19 +378,25 @@ def run(config: dict):
     if auto_enabled:
         from auto_order import AutoOrder  # 延迟导入
         auto = AutoOrder(api, auto_cfg, notifier=notifier)
-        mode = "演练(不扣款)" if auto_cfg.get("dryRun", True) else "真实下单"
         if auto.targets:
             targets_txt = ",".join(str(t.get("skuId")) for t in auto.targets)
         elif auto.match_name:
             targets_txt = f"名称匹配/{auto.match_name}"
         else:
             targets_txt = "未配置!"
-        _log(f"自动下单已开启（{mode}）目标: {targets_txt}")
+        _log(f"自动下单已开启（{'演练(不扣款)' if auto_cfg.get('dryRun', True) else '真实下单'}）"
+             f"目标: {targets_txt}")
         if not auto.targets and not auto.match_name:
             _log("警告: autoOrder 未配置 targets/matchName，将只提醒不会自动购买")
 
-    _log(f"监控启动 cityCode={city} interval={interval}s "
-         f"targets={len(config['targets'])} autoOrder={'on' if auto_enabled else 'off'}")
+    _log(f"监控启动 cityCode={city} 目标={len(config['targets'])} "
+         f"基础间隔={base_interval}s 每日预算={budget} autoOrder={'on' if auto_enabled else 'off'}")
+
+    seen_requests = api.total_requests
+    # 启动校准的请求也计入当日预算
+    _bump_requests(state, api.total_requests)
+    save_state(state)
+    notified_limit = False
 
     while not _stop:
         # 每轮重读状态文件：支持运行中用 --mark-purchased / --reset-purchased 生效
@@ -329,81 +404,152 @@ def run(config: dict):
         state.setdefault("alerted", {})
         state.setdefault("lastStatus", {})
         state.setdefault("purchased", {})
-        for target in config["targets"]:
-            if _stop:
-                break
-            key = f"{target['mode']}:{target.get('productId') or target.get('skuId') or target.get('searchKey')}"
-            # 每日限购：目标 sku 今天已买到 -> 当天跳过（日志每天只打一次）
-            target_sku = target.get("skuId")
-            if target_sku and purchased_today(state, target_sku):
-                if state.get("skipLogged", {}).get(key) != _today():
-                    state.setdefault("skipLogged", {})[key] = _today()
+        state.setdefault("calibrated", {})
+        state.setdefault("lastCheck", {})
+        now = time.time()
+
+        # 1) 冷却期（限流退避 / 预算耗尽）
+        cooldown = float(state.get("cooldownUntil", 0))
+        if cooldown > now:
+            reason = state.get("cooldownReason", "")
+            _stop_wait(min(cooldown - now, 60))
+            continue
+
+        # 2) 每日预算自适应
+        adaptive = _adaptive_interval(config, state, now, len(config["targets"]))
+        if adaptive is None:
+            until = _next_midnight()
+            state["cooldownUntil"] = until
+            state["cooldownReason"] = "daily_budget"
+            save_state(state)
+            _log(f"[限流保护] 今日请求预算({budget})已用尽，暂停至次日 00:00")
+            notifier.send("监控因请求预算用尽已暂停",
+                         f"今日已请求 {_day_count(state)} 次，达到预算 {budget}。\n"
+                         f"已暂停到次日 00:00 自动恢复。\n"
+                         f"如需更快发现补货，可提高 dailyRequestBudget（但可能触发平台限流）。")
+            _stop_wait(60)
+            continue
+
+        # 3) 选一个到期的目标（每轮最多 1 个请求）
+        if abs(adaptive - state.get("lastAdaptive", 0)) > 30:
+            state["lastAdaptive"] = adaptive
+            save_state(state)
+            _log(f"[调度] 生效检查间隔 ≈ {adaptive:.0f}s/目标"
+                 f"（今日已用 {_day_count(state)}/{budget} 次请求）")
+        picked = _pick_due(config, state, now, adaptive)
+        if not picked:
+            _stop_wait(5)
+            continue
+        target, key = picked
+
+        # 每日限购：目标 sku 今天已买到 -> 当天跳过（日志每天只打一次）
+        target_sku = target.get("skuId")
+        if target_sku and purchased_today(state, target_sku):
+            if state.get("skipLogged", {}).get(key) != _today():
+                state.setdefault("skipLogged", {})[key] = _today()
+                save_state(state)
+                _log(f"[{key}] sku={target_sku} 今日已购买，当天跳过监控（次日自动恢复）")
+            state["lastCheck"][key] = now
+            save_state(state)
+            continue
+
+        try:
+            if target["mode"] == "search":
+                items = check_search_target(api, target)
+            elif target["mode"] == "sku":
+                items = check_sku_target(api, target)
+            else:
+                items = check_detail_target(api, target)
+            # 过滤掉今天已购买的 sku（search 模式可能命中多个品种）
+            fresh = [p for p in items if not purchased_today(state, p.get("skuId"))]
+            if len(fresh) != len(items):
+                _log(f"[{key}] 已过滤今日已购 sku: "
+                     f"{[p.get('skuId') for p in items if p not in fresh]}")
+            items = fresh
+            has_stock = bool(items)
+            prev = state["lastStatus"].get(key)
+            state["lastStatus"][key] = has_stock
+
+            if has_stock:
+                now = time.time()
+                alerted = state["alerted"].get(key)
+                first_alert = prev is False or alerted is None
+                repeat_due = (repeat_min > 0 and alerted is not None
+                              and now - alerted.get("lastRepeat", 0) >= repeat_min * 60)
+                if first_alert or repeat_due:
+                    title = f"补货提醒：{items[0].get('productName')}"
+                    content = (f"检测到有货（{datetime.now():%H:%M:%S}）\n"
+                               f"{fmt_items(items)}\n\n请尽快前往商城下单。")
+                    notifier.send(title, content)
+                    if alerted is None:
+                        state["alerted"][key] = {"ts": now, "lastRepeat": now}
+                    else:
+                        alerted["lastRepeat"] = now
                     save_state(state)
-                    _log(f"[{key}] sku={target_sku} 今日已购买，当天跳过监控（次日自动恢复）")
-                continue
-            try:
-                if target["mode"] == "search":
-                    items = check_search_target(api, target)
-                elif target["mode"] == "sku":
-                    items = check_sku_target(api, target)
-                else:
-                    items = check_detail_target(api, target)
-                # 过滤掉今天已购买的 sku（search 模式可能命中多个品种）
-                fresh = [p for p in items if not purchased_today(state, p.get("skuId"))]
-                if len(fresh) != len(items):
-                    _log(f"[{key}] 已过滤今日已购 sku: "
-                         f"{[p.get('skuId') for p in items if p not in fresh]}")
-                items = fresh
-                has_stock = bool(items)
-                prev = state["lastStatus"].get(key)
-                state["lastStatus"][key] = has_stock
+                    if auto is not None:
+                        for item in items:
+                            if auto.matches(item.get("skuId"), item.get("productName")):
+                                res = auto.attempt(sku_id=item.get("skuId"),
+                                                   product_name=item.get("productName"))
+                                # 订单已创建（成功或待支付）-> 计入每日限购
+                                if res and res.get("orderCreated"):
+                                    mark_purchased(state, item.get("skuId"))
+                _log(f"[{key}] 有货 {fmt_items(items)}")
+            else:
+                _log(f"[{key}] 缺货/补货中")
 
-                if has_stock:
-                    now = time.time()
-                    alerted = state["alerted"].get(key)
-                    first_alert = prev is False or alerted is None
-                    repeat_due = (repeat_min > 0 and alerted is not None
-                                  and now - alerted.get("lastRepeat", 0) >= repeat_min * 60)
-                    if first_alert or repeat_due:
-                        title = f"补货提醒：{items[0].get('productName')}"
-                        content = (f"检测到有货（{datetime.now():%H:%M:%S}）\n"
-                                   f"{fmt_items(items)}\n\n请尽快前往商城下单。")
-                        notifier.send(title, content)
-                        if alerted is None:
-                            state["alerted"][key] = {"ts": now, "lastRepeat": now}
-                        else:
-                            alerted["lastRepeat"] = now
-                        save_state(state)
-                        if auto is not None:
-                            for item in items:
-                                if auto.matches(item.get("skuId"), item.get("productName")):
-                                    res = auto.attempt(sku_id=item.get("skuId"),
-                                                       product_name=item.get("productName"))
-                                    # 订单已创建（成功或待支付）-> 计入每日限购
-                                    if res and res.get("orderCreated"):
-                                        mark_purchased(state, item.get("skuId"))
-                    _log(f"[{key}] 有货 {fmt_items(items)}")
+        except ApiError as e:
+            if _is_rate_limited(e):
+                factor = float(state.get("throttleFactor", 1))
+                state["throttleFactor"] = min(factor * 2, 16)
+                state["rateLimitCount"] = int(state.get("rateLimitCount", 0)) + 1
+                if state["rateLimitCount"] >= 3:
+                    until = _next_midnight()      # 反复触发：按日配额处理，暂停到次日
+                    state["cooldownReason"] = "rate_limit_day"
                 else:
-                    _log(f"[{key}] 缺货/补货中")
-
-            except ApiError as e:
+                    until = now + backoff_sec
+                    state["cooldownReason"] = "rate_limit"
+                state["cooldownUntil"] = until
+                save_state(state)
+                _log(f"[限流] {e} → 退避至 "
+                     f"{datetime.fromtimestamp(until):%m-%d %H:%M}"
+                     f"（间隔将放慢至 {adaptive * state['throttleFactor']:.0f}s）")
+                if not notified_limit:
+                    notified_limit = True
+                    notifier.send(
+                        "监控触发平台频率限制，已自动降速",
+                        f"错误：{e}\n\n程序已自动处理：\n"
+                        f"· 暂停请求至 {datetime.fromtimestamp(until):%m-%d %H:%M}\n"
+                        f"· 检查间隔自动放慢（×{state['throttleFactor']}）\n"
+                        f"· 今日已请求 {_day_count(state)} 次\n\n"
+                        f"建议：调大 config.json 的 minIntervalSec（当前 {base_interval}s）"
+                        f"或减少监控目标，避免再次触发。")
+            else:
                 _log(f"[{key}] API错误: {e}")
                 # ID 可能已失效（商品重新上架换了新 ID）：配置了校准就立即重搜
                 if target.get("calibrate"):
                     calibrate_targets(api, config, state, notifier,
                                       only_key=_calib_key(target))
                     last_calibrate = time.time()
-            except Exception as e:
-                _log(f"[{key}] 异常: {e}")
-            time.sleep(random.uniform(0.5, 1.5))  # 目标间错峰
+        except Exception as e:
+            _log(f"[{key}] 异常: {e}")
 
-        if _stop:
-            break
-        # 定期校准商品 ID（默认每 24 小时一次）
+        # 记录本轮请求数（用于每日预算）
+        state["lastCheck"][key] = time.time()
+        _bump_requests(state, api.total_requests - seen_requests)
+        seen_requests = api.total_requests
+        save_state(state)
+
+        # 4) 定期校准商品 ID
         if time.time() - last_calibrate >= calibrate_interval:
             calibrate_targets(api, config, state, notifier)
             last_calibrate = time.time()
-        _stop_wait(interval * (1 + random.uniform(-jitter, jitter)))
+            _bump_requests(state, api.total_requests - seen_requests)
+            seen_requests = api.total_requests
+            save_state(state)
+
+        # 5) 轻微间隔，避免请求扎堆
+        _stop_wait(random.uniform(2, 6))
 
     _log("监控已停止")
 
@@ -424,6 +570,8 @@ def main():
                         help="清除全部已购标记（恢复当天监控，测试用）")
     parser.add_argument("--calibrate-now", action="store_true",
                         help="立即执行一次商品 ID 校准并退出")
+    parser.add_argument("--stats", action="store_true",
+                        help="显示今日请求用量与限流状态后退出")
     args = parser.parse_args()
 
     # 一次性维护命令（不需要启动监控）
@@ -439,6 +587,16 @@ def main():
             _log("已清除全部今日已购标记，监控品种当天恢复")
         else:
             _log("当前没有已购标记")
+        return
+    if args.stats:
+        state = load_state()
+        cd = float(state.get("cooldownUntil", 0))
+        print(f"今日已请求: {_day_count(state)} 次")
+        print(f"限流退避至: "
+              f"{datetime.fromtimestamp(cd):%Y-%m-%d %H:%M}" if cd > time.time()
+              else "限流退避: 无")
+        print(f"降速倍数: {state.get('throttleFactor', 1)}x")
+        print(f"限流触发次数: {state.get('rateLimitCount', 0)}")
         return
 
     cfg_path = Path(args.config)
