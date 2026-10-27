@@ -25,7 +25,7 @@ python monitor.py            # 开始监控（Ctrl+C 停止）
 | --- | --- |
 | `zp_api.py` | MallApi 客户端（签名复刻 + 全部业务方法） |
 | `monitor.py` | 监控主程序（轮询/状态机/提醒/下单触发） |
-| `notify.py` | 提醒渠道：Bark / PushPlus / Server酱 / 钉钉 / 企微 / 飞书 / Telegram / 自定义 webhook |
+| `notify.py` | 提醒渠道：Bark / **ggsuper(鸿蒙华为)** / PushPlus / Server酱 / 钉钉 / 企微 / 飞书 / Telegram / 自定义 webhook |
 | `auto_order.py` | 自动下单（**默认 dryRun 不扣款**，成功后自动推送通知） |
 | `login_helper.py` | Playwright 登录助手（自动捕获 apiToken，需显示器） |
 | `login.py` | 终端交互登录：手机号+短信验证码，自动写入 config.json（NAS/SSH 适用） |

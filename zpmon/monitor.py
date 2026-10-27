@@ -572,7 +572,12 @@ def run(config: dict):
                     title = f"补货提醒：{items[0].get('productName')}"
                     content = (f"检测到有货（{datetime.now():%H:%M:%S}）\n"
                                f"{fmt_items(items)}\n\n请尽快前往商城下单。")
-                    notifier.send(title, content)
+                    # 点击跳转链接（Bark / ggsuper 支持）：指向第一个有货商品
+                    click_url = ""
+                    pid = items[0].get("productId")
+                    if pid:
+                        click_url = f"{MALL_URL}/mall/cake/dg_detail?id={pid}"
+                    notifier.send(title, content, click_url)
                     if alerted is None:
                         state["alerted"][key] = {"ts": now, "lastRepeat": now}
                     else:

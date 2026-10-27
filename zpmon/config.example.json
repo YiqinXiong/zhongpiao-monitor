@@ -59,6 +59,14 @@
       "url": "https://api.day.app",
       "key": ""
     },
+    "ggsuper": {
+      "url": "https://www.ggsuper.com.cn",
+      "token": "",
+      "sender": "中票优品监控",
+      "icon": "",
+      "channelId": "",
+      "_comment": "七只猪『全能消息推送BARK』：鸿蒙/华为机型离线推送用这个。token 填 APP 内注册的接收 token；填了 channelId 则向频道订阅者群发（token 填频道创建人的 token）；icon 必须是 https 图片且鸿蒙端 ≤192KB"
+    },
     "pushplus": { "token": "" },
     "serverchan": { "sendkey": "" },
     "dingtalk": { "webhook": "" },
