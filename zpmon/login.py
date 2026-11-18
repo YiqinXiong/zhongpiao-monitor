@@ -65,11 +65,15 @@ def show_cards(api: MallApi):
 
 
 def get_wx_state(api: MallApi) -> str:
-    """获取登录授信 state（短信发送/登录接口要求 wxState 非空，每次调用都会变）。"""
-    data = api.call("app_get_wxma_auth_info").get("data") or {}
+    """获取 H5 登录授信 state（短信发送/登录接口要求 wxState 非空，每次调用都会变）。"""
+    data = api.call(
+        "app_get_wxmp_auth_link",
+        platform="H5",
+        redirectURI="https://zpmall.zhongpiaofuli.com/mall/common/public?redirect_domain=https%3A%2F%2Fzpmall.zhongpiaofuli.com",
+    ).get("data") or {}
     ws = data.get("wxState")
     if not ws:
-        raise ApiError("app_get_wxma_auth_info 未返回 wxState")
+        raise ApiError("app_get_wxmp_auth_link 未返回 wxState")
     return ws
 
 
@@ -91,7 +95,7 @@ def main():
     if not (phone.isdigit() and len(phone) == 11):
         sys.exit("手机号格式不正确（应为 11 位数字）")
 
-    # 1. 发送验证码（每次尝试都重新获取 wxState；失败可重试）
+    # 1. 发送验证码（每次尝试都重新获取 H5 wxState；失败可重试）
     wx_state = ""
     while True:
         try:
